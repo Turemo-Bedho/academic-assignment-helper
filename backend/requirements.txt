@@ -12,3 +12,4 @@ requests
 pypdf2
 python-docx
 numpy
+pgvector
