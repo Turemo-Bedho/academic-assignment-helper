@@ -9,6 +9,7 @@ from typing import List
 import requests
 import json
 
+from fastapi import Request
 from . import models, schemas, auth, rag_service, database
 from .config import settings
 from .auth import verify_token
@@ -70,8 +71,75 @@ def login(email: str = Form(...), password: str = Form(...), db: Session = Depen
     return {"access_token": access_token, "token_type": "bearer"}
 
 
+# @app.post("/upload", response_model=dict)
+# async def upload_assignment(
+#     file: UploadFile = File(...),
+#     token_data: schemas.TokenData = Depends(verify_token),
+#     db: Session = Depends(get_db)
+# ):
+#     # Validate file type
+#     allowed_extensions = {'.pdf', '.docx', '.doc', '.txt'}
+#     file_extension = os.path.splitext(file.filename)[1].lower()
+#     if file_extension not in allowed_extensions:
+#         raise HTTPException(status_code=400, detail="File type not allowed")
+    
+#     # Create uploads directory if it doesn't exist
+#     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    
+#     # Save file with unique name to avoid conflicts
+#     unique_filename = f"{uuid.uuid4()}_{file.filename}"
+#     file_path = os.path.join(settings.UPLOAD_DIR, unique_filename)
+    
+#     with open(file_path, "wb") as buffer:
+#         shutil.copyfileobj(file.file, buffer)
+    
+#     # Create assignment record
+#     assignment = models.Assignment(
+#         student_id=token_data.student_id,
+#         filename=unique_filename,
+#         original_text=f"File stored at: {file_path}"  # We'll extract text in n8n
+#     )
+#     db.add(assignment)
+#     db.commit()
+#     db.refresh(assignment)
+    
+#     print(f"✅ File uploaded: {unique_filename}, Assignment ID: {assignment.id}")
+    
+#     # Trigger n8n workflow
+#     try:
+#         webhook_data = {
+#             "assignment_id": assignment.id,
+#             "filename": unique_filename,
+#             "file_path": file_path,
+#             "student_id": token_data.student_id,
+#             "original_filename": file.filename
+#         }
+        
+#         print(f"🚀 Triggering n8n workflow with data: {webhook_data}")
+        
+#         response = requests.post(
+#             settings.N8N_WEBHOOK_URL, 
+#             json=webhook_data,
+#             timeout=30
+#         )
+        
+#         if response.status_code == 200:
+#             print("✅ n8n webhook triggered successfully")
+#         else:
+#             print(f"⚠️ n8n webhook returned status: {response.status_code}")
+    
+#     except Exception as e:
+#         print(f"❌ Error calling n8n webhook: {e}")
+    
+#     return {
+#         "message": "File uploaded successfully", 
+#         "assignment_id": assignment.id, 
+#         "analysis_job_id": assignment.id
+#     }
+
 @app.post("/upload", response_model=dict)
 async def upload_assignment(
+    request: Request,
     file: UploadFile = File(...),
     token_data: schemas.TokenData = Depends(verify_token),
     db: Session = Depends(get_db)
@@ -106,21 +174,35 @@ async def upload_assignment(
     
     # Trigger n8n workflow
     try:
+            # Get the Authorization header from the original request
+        auth_header = request.headers.get("authorization", "")
+        token = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else ""
         webhook_data = {
             "assignment_id": assignment.id,
             "filename": unique_filename,
             "file_path": file_path,
             "student_id": token_data.student_id,
-            "original_filename": file.filename
+            "original_filename": file.filename,
+            "token":token
         }
         
         print(f"🚀 Triggering n8n workflow with data: {webhook_data}")
         
+        # ADD DEBUG LOGGING HERE
+        print(f"🔗 N8N_WEBHOOK_URL from settings: {settings.N8N_WEBHOOK_URL}")
+        print(f"🔗 Full webhook URL being used: {settings.N8N_WEBHOOK_URL}")
+        
         response = requests.post(
             settings.N8N_WEBHOOK_URL, 
             json=webhook_data,
-            timeout=30
+            timeout=60
         )
+        
+        # ADD MORE DEBUGGING
+        print(f"📡 n8n response status: {response.status_code}")
+        print(f"📡 n8n response headers: {dict(response.headers)}")
+        if response.status_code != 200:
+            print(f"📡 n8n response text: {response.text}")
         
         if response.status_code == 200:
             print("✅ n8n webhook triggered successfully")
@@ -129,13 +211,14 @@ async def upload_assignment(
     
     except Exception as e:
         print(f"❌ Error calling n8n webhook: {e}")
+        import traceback
+        print(f"❌ Full traceback: {traceback.format_exc()}")
     
     return {
         "message": "File uploaded successfully", 
         "assignment_id": assignment.id, 
         "analysis_job_id": assignment.id
     }
-
 
 
 

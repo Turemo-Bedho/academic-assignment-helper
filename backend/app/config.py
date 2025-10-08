@@ -9,7 +9,7 @@ class Settings:
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 30
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    N8N_WEBHOOK_URL: str = os.getenv("N8N_WEBHOOK_URL", "http://n8n:5678/webhook/assignment")
+    N8N_WEBHOOK_URL: str = os.getenv("N8N_WEBHOOK_URL", "https://turemobedaso.app.n8n.cloud/webhook/assignment")
     
     # File upload settings
     UPLOAD_DIR: str = "uploads"

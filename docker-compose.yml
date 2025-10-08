@@ -35,7 +35,7 @@ services:
       - DATABASE_URL=postgresql://student:secure_password@postgres:5432/academic_helper
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - N8N_WEBHOOK_URL=http://n8n:5678/webhook/assignment
+      - N8N_WEBHOOK_URL=https://turemobedaso.app.n8n.cloud/webhook/assignment
     volumes:
       - ./backend:/app
       - ./backend/uploads:/app/uploads
