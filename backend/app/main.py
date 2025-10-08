@@ -1,3 +1,5 @@
+import uuid
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
@@ -43,7 +45,14 @@ def register(student: schemas.StudentCreate, db: Session = Depends(get_db)):
     db.add(db_student)
     db.commit()
     db.refresh(db_student)
+    
+    # Create token with string student ID
+    access_token = auth.create_access_token(data={"sub": str(db_student.id)})
+    print(f"✅ Registered student {db_student.id}, token created")
+    
     return db_student
+
+
 
 @app.post("/auth/login", response_model=schemas.Token)
 def login(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
@@ -54,10 +63,13 @@ def login(email: str = Form(...), password: str = Form(...), db: Session = Depen
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token = auth.create_access_token(data={"sub": student.id})
+    
+    # Convert student.id to string for JWT compliance
+    access_token = auth.create_access_token(data={"sub": str(student.id)})
+    
     return {"access_token": access_token, "token_type": "bearer"}
 
-# File upload and analysis endpoints
+
 @app.post("/upload", response_model=dict)
 async def upload_assignment(
     file: UploadFile = File(...),
@@ -70,37 +82,62 @@ async def upload_assignment(
     if file_extension not in allowed_extensions:
         raise HTTPException(status_code=400, detail="File type not allowed")
     
-    # Save file
-    file_path = os.path.join(settings.UPLOAD_DIR, file.filename)
+    # Create uploads directory if it doesn't exist
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    
+    # Save file with unique name to avoid conflicts
+    unique_filename = f"{uuid.uuid4()}_{file.filename}"
+    file_path = os.path.join(settings.UPLOAD_DIR, unique_filename)
+    
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
     # Create assignment record
     assignment = models.Assignment(
         student_id=token_data.student_id,
-        filename=file.filename
+        filename=unique_filename,
+        original_text=f"File stored at: {file_path}"  # We'll extract text in n8n
     )
     db.add(assignment)
     db.commit()
     db.refresh(assignment)
     
+    print(f"✅ File uploaded: {unique_filename}, Assignment ID: {assignment.id}")
+    
     # Trigger n8n workflow
     try:
         webhook_data = {
             "assignment_id": assignment.id,
-            "filename": file.filename,
+            "filename": unique_filename,
             "file_path": file_path,
-            "student_id": token_data.student_id
+            "student_id": token_data.student_id,
+            "original_filename": file.filename
         }
-        response = requests.post(settings.N8N_WEBHOOK_URL, json=webhook_data)
         
-        if response.status_code != 200:
-            print(f"n8n webhook failed: {response.status_code}")
+        print(f"🚀 Triggering n8n workflow with data: {webhook_data}")
+        
+        response = requests.post(
+            settings.N8N_WEBHOOK_URL, 
+            json=webhook_data,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            print("✅ n8n webhook triggered successfully")
+        else:
+            print(f"⚠️ n8n webhook returned status: {response.status_code}")
     
     except Exception as e:
-        print(f"Error calling n8n webhook: {e}")
+        print(f"❌ Error calling n8n webhook: {e}")
     
-    return {"message": "File uploaded successfully", "assignment_id": assignment.id, "analysis_job_id": assignment.id}
+    return {
+        "message": "File uploaded successfully", 
+        "assignment_id": assignment.id, 
+        "analysis_job_id": assignment.id
+    }
+
+
+
 
 @app.get("/analysis/{analysis_id}", response_model=schemas.AnalysisResultResponse)
 def get_analysis(
@@ -119,6 +156,9 @@ def get_analysis(
     
     return analysis
 
+
+
+
 @app.get("/sources", response_model=schemas.SourceSearchResponse)
 def search_sources(
     query: str,
@@ -128,6 +168,71 @@ def search_sources(
     rag = rag_service.RAGService()
     sources = rag.search_similar_sources(db, query)
     return {"query": query, "sources": sources}
+
+
+
+# Internal endpoint for n8n to store analysis results
+@app.post("/internal/store-analysis")
+async def store_analysis_results(
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Internal endpoint for n8n workflow to store analysis results
+    Expects JSON with: assignment_id, suggested_sources, plagiarism_score, 
+    flagged_sections, research_suggestions, citation_recommendations, confidence_score
+    """
+    try:
+        print(f"📥 Received analysis results for assignment: {request}")
+        
+        # Extract data from request
+        assignment_id = request.get("assignment_id")
+        suggested_sources = request.get("suggested_sources", [])
+        plagiarism_score = request.get("plagiarism_score", 0.0)
+        flagged_sections = request.get("flagged_sections", [])
+        research_suggestions = request.get("research_suggestions", "")
+        citation_recommendations = request.get("citation_recommendations", "")
+        confidence_score = request.get("confidence_score", 0.0)
+        
+        # Validate assignment exists
+        assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+        if not assignment:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Assignment {assignment_id} not found"}
+            )
+        
+        # Create analysis result
+        analysis = models.AnalysisResult(
+            assignment_id=assignment_id,
+            suggested_sources=suggested_sources,
+            plagiarism_score=plagiarism_score,
+            flagged_sections=flagged_sections,
+            research_suggestions=research_suggestions,
+            citation_recommendations=citation_recommendations,
+            confidence_score=confidence_score
+        )
+        
+        db.add(analysis)
+        db.commit()
+        db.refresh(analysis)
+        
+        print(f"✅ Analysis stored with ID: {analysis.id}")
+        
+        return {
+            "status": "success", 
+            "analysis_id": analysis.id,
+            "message": "Analysis results stored successfully"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error storing analysis: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to store analysis: {str(e)}"}
+        )
+
 
 # Health check
 @app.get("/")

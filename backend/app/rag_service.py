@@ -21,19 +21,62 @@ class RAGService:
             print(f"Error generating embedding: {e}")
             return None
     
+    def generate_and_store_embeddings_for_existing_sources(self, db: Session):
+        """Generate and store embeddings for all academic sources that don't have them"""
+        try:
+            # Get all sources without embeddings
+            sources_without_embeddings = db.query(models.AcademicSource).filter(
+                models.AcademicSource.embedding == None
+            ).all()
+            
+            print(f"Found {len(sources_without_embeddings)} sources without embeddings")
+            
+            for source in sources_without_embeddings:
+                # Create embedding text from title and abstract
+                embedding_text = f"{source.title}. {source.abstract}"
+                embedding = self.get_embedding(embedding_text)
+                
+                if embedding:
+                    # Convert to the format PostgreSQL expects
+                    embedding_array = "[" + ",".join(map(str, embedding)) + "]"
+                    
+                    # Update the source with the embedding
+                    update_sql = text("""
+                        UPDATE academic_sources 
+                        SET embedding = :embedding::vector 
+                        WHERE id = :source_id
+                    """)
+                    
+                    db.execute(update_sql, {
+                        "embedding": embedding_array,
+                        "source_id": source.id
+                    })
+                    
+                    print(f"✅ Added embedding for source: {source.title}")
+                else:
+                    print(f"❌ Failed to generate embedding for source: {source.title}")
+            
+            db.commit()
+            print("✅ All embeddings generated and stored successfully")
+            
+        except Exception as e:
+            db.rollback()
+            print(f"❌ Error generating embeddings: {e}")
+
+
     def search_similar_sources(self, db: Session, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Search for similar academic sources using vector similarity"""
         query_embedding = self.get_embedding(query)
         if not query_embedding:
+            print("Embedding generation failed")
             return []
         
-        # Convert embedding to string format for PostgreSQL
         embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
+        print(f"Query: {query}, Embedding length: {len(query_embedding)}")
         
-        # Perform vector similarity search
         query_sql = text("""
             SELECT id, title, authors, publication_year, abstract, source_type,
-                   embedding <=> :embedding as similarity
+                embedding <=> :embedding as similarity
             FROM academic_sources
             ORDER BY similarity
             LIMIT :top_k
@@ -42,7 +85,15 @@ class RAGService:
         results = db.execute(query_sql, {"embedding": embedding_str, "top_k": top_k})
         
         sources = []
-        for row in results:
+        for i, row in enumerate(results):
+            print(f"Row {i}: similarity = {row[6]}, type = {type(row[6])}")
+            
+            # Safe conversion
+            similarity = row[6]
+            if similarity is None:
+                print(f"Warning: NULL similarity for record {row[0]}")
+                similarity = 1.0
+                
             sources.append({
                 "id": row[0],
                 "title": row[1],
@@ -50,10 +101,17 @@ class RAGService:
                 "publication_year": row[3],
                 "abstract": row[4],
                 "source_type": row[5],
-                "similarity_score": float(row[6])
+                "similarity_score": float(similarity)
             })
         
+        print(f"Found {len(sources)} sources")
         return sources
+     
+    
+
+
+
+
     
     def analyze_assignment_content(self, text: str, similar_sources: List[Dict]) -> Dict[str, Any]:
         """Analyze assignment content using AI"""
